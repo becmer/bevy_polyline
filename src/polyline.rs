@@ -83,7 +83,7 @@ impl RenderAsset for GpuPolyline {
     fn prepare_asset(
         polyline: Self::SourceAsset,
         _: AssetId<Self::SourceAsset>,
-        render_device: &mut bevy::ecs::system::SystemParamItem<Self::Param>,
+        render_device: &mut SystemParamItem<Self::Param>,
         _: Option<&Self>,
     ) -> Result<Self, PrepareAssetError<Self::SourceAsset>> {
         let vertex_buffer_data = bytemuck::cast_slice(polyline.vertices.as_slice());
@@ -145,15 +145,14 @@ pub fn extract_polylines(
 
 #[derive(Clone, Resource)]
 pub struct PolylinePipeline {
-    pub view_layout: BindGroupLayout,
-    pub polyline_layout: BindGroupLayout,
+    pub view_layout: BindGroupLayoutDescriptor,
+    pub polyline_layout: BindGroupLayoutDescriptor,
     pub shader: Handle<Shader>,
 }
 
 impl FromWorld for PolylinePipeline {
-    fn from_world(world: &mut World) -> Self {
-        let render_device = world.get_resource::<RenderDevice>().unwrap();
-        let view_layout = render_device.create_bind_group_layout(
+    fn from_world(_world: &mut World) -> Self {
+        let view_layout = BindGroupLayoutDescriptor::new(
             "polyline_view_layout",
             &BindGroupLayoutEntries::single(
                 ShaderStages::VERTEX,
@@ -161,7 +160,7 @@ impl FromWorld for PolylinePipeline {
             ),
         );
 
-        let polyline_layout = render_device.create_bind_group_layout(
+        let polyline_layout = BindGroupLayoutDescriptor::new(
             "polyline_layout",
             &BindGroupLayoutEntries::single(
                 ShaderStages::VERTEX,
@@ -286,9 +285,9 @@ bitflags::bitflags! {
     // MSAA uses the highest 3 bits for the MSAA log2(sample count) to support up to 128x MSAA.
     pub struct PolylinePipelineKey: u32 {
         const NONE = 0;
-        const PERSPECTIVE = (1 << 0);
-        const TRANSPARENT_MAIN_PASS = (1 << 1);
-        const HDR = (1 << 2);
+        const PERSPECTIVE = 1 << 0;
+        const TRANSPARENT_MAIN_PASS = 1 << 1;
+        const HDR = 1 << 2;
         const MSAA_RESERVED_BITS = Self::MSAA_MASK_BITS << Self::MSAA_SHIFT_BITS;
     }
 }
@@ -325,13 +324,14 @@ pub fn prepare_polyline_bind_group(
     mut commands: Commands,
     polyline_pipeline: Res<PolylinePipeline>,
     render_device: Res<RenderDevice>,
+    pipeline_cache: Res<PipelineCache>,
     polyline_uniforms: Res<ComponentUniforms<PolylineUniform>>,
 ) {
     if let Some(binding) = polyline_uniforms.uniforms().binding() {
         commands.insert_resource(PolylineBindGroup {
             value: render_device.create_bind_group(
                 Some("polyline_bind_group"),
-                &polyline_pipeline.polyline_layout,
+                &pipeline_cache.get_bind_group_layout(&polyline_pipeline.polyline_layout),
                 &BindGroupEntries::single(binding),
             ),
         });
@@ -347,15 +347,20 @@ pub struct PolylineViewBindGroup {
 pub fn prepare_polyline_view_bind_groups(
     mut commands: Commands,
     render_device: Res<RenderDevice>,
+    pipeline_cache: Res<PipelineCache>,
     polyline_pipeline: Res<PolylinePipeline>,
     view_uniforms: Res<ViewUniforms>,
     views: Query<Entity, With<bevy::render::view::ExtractedView>>,
 ) {
     for entity in views.iter() {
+        let Some(view_uniforms_binding) = view_uniforms.uniforms.binding() else {
+            continue;
+        };
+
         let view_bind_group = render_device.create_bind_group(
             Some("polyline_view_bind_group"),
-            &polyline_pipeline.view_layout,
-            &BindGroupEntries::single(&view_uniforms.uniforms),
+            &pipeline_cache.get_bind_group_layout(&polyline_pipeline.view_layout),
+            &BindGroupEntries::single(view_uniforms_binding),
         );
 
         commands.entity(entity).insert(PolylineViewBindGroup {
@@ -366,9 +371,9 @@ pub fn prepare_polyline_view_bind_groups(
 
 pub struct SetPolylineBindGroup<const I: usize>;
 impl<const I: usize, P: PhaseItem> RenderCommand<P> for SetPolylineBindGroup<I> {
+    type Param = SRes<PolylineBindGroup>;
     type ViewQuery = ();
     type ItemQuery = Read<DynamicUniformIndex<PolylineUniform>>;
-    type Param = SRes<PolylineBindGroup>;
 
     #[inline]
     fn render<'w>(
@@ -388,9 +393,9 @@ impl<const I: usize, P: PhaseItem> RenderCommand<P> for SetPolylineBindGroup<I> 
 
 pub struct DrawPolyline;
 impl<P: PhaseItem> RenderCommand<P> for DrawPolyline {
+    type Param = SRes<RenderAssets<GpuPolyline>>;
     type ViewQuery = ();
     type ItemQuery = Read<PolylineHandle>;
-    type Param = SRes<RenderAssets<GpuPolyline>>;
 
     #[inline]
     fn render<'w>(
